@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -ex
 
-target_repo="asxez/DockerDesktop-CN"
+target_repo="maogeddd/DockerDesktop-CN"
 root_dir=$(pwd)
 asar_bin="./node_modules/.bin/asar"
 

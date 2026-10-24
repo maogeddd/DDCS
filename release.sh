@@ -145,55 +145,42 @@ function pack_asar() {
     fi
 }
 
-# unzip, extract, replace, pack (dynamic paths using find)
+# unzip, extract, replace, pack
 function ddcs() {
-    local pkg_name=$1
-    local arch=$(echo "$pkg_name" | sed -nr 's/DockerDesktop-.+-(.+-.+)\..+/\1/p')
+    pkg_name=$1
+    # Windows-x86, Windows-arm, Mac-apple, Mac-intel, Debian-x86
+    arch=$(echo "$pkg_name" | sed -nr 's/DockerDesktop-.+-(.+-.+)\..+/\1/p')
 
     rm -f "dist/app-${arch}.zip"
     rm -rf "tmp/${arch}" "tmp/app-${arch}" "tmp/app-${arch}.asar" "tmp/app-${arch}.asar.unpacked" "tmp/package-${arch}"
-    
     ./7z/7zz x "dist/${pkg_name}" -y -o"tmp/${arch}" -bso0 -bd || true
 
-    if [[ "$arch" == Windows* ]]; then
-        find "tmp/${arch}" -type f \( -name "*.msi" -o -name "*.cab" \) | while read -r archive; do
-            if [ -f "$archive" ]; then
-                local ext_dir="${archive}_ext"
-                mkdir -p "$ext_dir"
-                ./7z/7zz x "$archive" -y -o"$ext_dir" -bso0 -bd || true
-            fi
-        done
-    elif [[ "$arch" == Debian* ]]; then
-        local data_tar
-        data_tar=$(find "tmp/${arch}" -name "data.tar" | head -n 1)
-        if [ -n "$data_tar" ]; then
-            tar -xf "$data_tar" -C "tmp/${arch}" || true
+    exe_path=""
+    plist_path=""
+    if [[ $arch == Windows* ]]; then
+        nested="tmp/${arch}/.rsrc/0/RCDATA/DOCKERDESKTOP"
+        if [ ! -d "tmp/${arch}/frontend" ] && [ -f "${nested}" ]; then
+            ./7z/7zz x "${nested}" -y -o"tmp/${arch}/inner" -bso0 -bd || true
         fi
-    fi
-
-    local found_asar
-    found_asar=$(find "tmp/${arch}" -name "app.asar" -type f | head -n 1)
-    if [ -z "$found_asar" ]; then
-        echo "Error: app.asar not found in extracted files for ${arch}"
+        asar_path=$(find "tmp/${arch}" -type f -name app.asar -path '*resources*' | head -n1)
+        [ -n "${asar_path}" ] || { echo "app.asar not found"; exit 1; }
+        resources_dir=$(dirname "${asar_path}")
+        exe_path="$(dirname "${resources_dir}")/Docker Desktop.exe"
+        [ -f "${exe_path}" ] || { echo "Docker Desktop.exe not found"; exit 1; }
+    elif [[ $arch == Mac* ]]; then
+        resources_dir="tmp/${arch}/Docker/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/Resources"
+        plist_path="tmp/${arch}/Docker/Docker.app/Contents/MacOS/Docker Desktop.app/Contents/Info.plist"
+    elif [[ $arch == Debian* ]]; then
+        tar -xf "tmp/${arch}/data.tar" -C "tmp/${arch}"
+        resources_dir="tmp/${arch}/opt/docker-desktop/resources"
+    else
+        echo "unknown arch"
         exit 1
     fi
 
-    local asar_dir
-    asar_dir=$(dirname "$found_asar")
-    
-    mv "$found_asar" "tmp/app-${arch}.asar"
-    if [ -d "${asar_dir}.asar.unpacked" ]; then
-        mv "${asar_dir}.asar.unpacked" "tmp/app-${arch}.asar.unpacked"
-    elif [ -d "$asar_dir/app.asar.unpacked" ]; then
-        mv "$asar_dir/app.asar.unpacked" "tmp/app-${arch}.asar.unpacked"
-    fi
-
-    local exe_path=""
-    local plist_path=""
-    if [[ "$arch" == Windows* ]]; then
-        exe_path=$(find "tmp/${arch}" -name "Docker Desktop.exe" -type f | head -n 1)
-    elif [[ "$arch" == Mac* ]]; then
-        plist_path=$(find "tmp/${arch}" -name "Info.plist" -type f | head -n 1)
+    mv "${resources_dir}/app.asar" "tmp/app-${arch}.asar"
+    if [ -d "${resources_dir}/app.asar.unpacked" ]; then
+        mv "${resources_dir}/app.asar.unpacked" "tmp/app-${arch}.asar.unpacked"
     fi
 
     "${asar_bin}" extract "tmp/app-${arch}.asar" "tmp/app-${arch}"
@@ -201,21 +188,12 @@ function ddcs() {
 
     mkdir -p "tmp/package-${arch}"
     pack_asar "tmp/app-${arch}" "tmp/app-${arch}.asar.unpacked" "tmp/package-${arch}/app.asar"
-    
-    if [[ "$arch" == Windows* ]]; then
-        if [ -n "$exe_path" ] && [ -f "$exe_path" ]; then
-            patch_windows_integrity "tmp/package-${arch}/app.asar" "${exe_path}"
-            cp "${exe_path}" "tmp/package-${arch}/Docker Desktop.exe"
-        else
-            echo "warning: Docker Desktop.exe not found for patching integrity"
-        fi
-    elif [[ "$arch" == Mac* ]]; then
-        if [ -n "$plist_path" ] && [ -f "$plist_path" ]; then
-            patch_macos_integrity "tmp/package-${arch}/app.asar" "${plist_path}"
-            cp "${plist_path}" "tmp/package-${arch}/Info.plist"
-        else
-            echo "warning: Info.plist not found for patching integrity"
-        fi
+    if [[ $arch == Windows* ]]; then
+        patch_windows_integrity "tmp/package-${arch}/app.asar" "${exe_path}"
+        cp "${exe_path}" "tmp/package-${arch}/Docker Desktop.exe"
+    elif [[ $arch == Mac* ]]; then
+        patch_macos_integrity "tmp/package-${arch}/app.asar" "${plist_path}"
+        cp "${plist_path}" "tmp/package-${arch}/Info.plist"
     fi
 
     (
@@ -229,6 +207,7 @@ ddcs "DockerDesktop-${version}-Windows-arm.exe"
 ddcs "DockerDesktop-${version}-Mac-apple.dmg"
 ddcs "DockerDesktop-${version}-Mac-intel.dmg"
 ddcs "DockerDesktop-${version}-Debian-x86.deb"
+
 
 notes="DockerDesktop ${version} 版本安装程序及汉化包.
 
